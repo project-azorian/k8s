@@ -1,0 +1,19 @@
+# - name: "image-prep"
+#   include_tasks: prep-image.yaml
+
+
+- local_action:
+    module: openssh_keypair
+    path: /tmp/id_ssh_rsa
+
+- name: "haproxy"
+  include_tasks: haproxy.yaml
+  vars:
+    vm_instance: "haproxy"
+
+- name: "kube nodes"
+  include_tasks: vm-create.yaml
+  with_sequence:
+    start=1 end="{{ number_vms | int }}"
+  loop_control:
+    loop_var: vm_instance

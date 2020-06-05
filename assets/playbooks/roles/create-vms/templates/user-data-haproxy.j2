@@ -1,0 +1,133 @@
+#jinja2: trim_blocks:False
+#cloud-config
+ssh_authorized_keys:
+    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDCAWBkS5iD7ORK59YUjJlPiWnzZXoFPbxlo8kvXjeGVgtUVD/FORZBvztoB9J1xTgE+DEg0dE2DiVrh3WXMWnUUwyaqjIu5Edo++P7xb53T9xRC7TUfc798NLAGk3CD8XvEGbDB7CD6Tvx7HcAco0WpEcPePcTcv89rZGPjal1nY4kGNT/0TWeECm99cXuWFjKm6WiMrir9ZN1yLcX/gjugrHmAGm8kQ/NJVEDRgSPV6jhppp7P/1+yqIUOOOXLx61d8oVG+ADlXEckXoetqHYjbzisxO/wa2KFM7cb5NTVKHFmxwVKX4kJeRL+I/94yLCiG05PidUFsIMzByPBEe/
+    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC9D1m9eMr75japSYMX0Id/af1pyfDM2I1lPSwi2zZwYo8w0b3AyzV3w4iL8PzHCRmxwcm6/w5TfCxEHu7IzTJ4IkN7vIvJEVFPVCJNunuu1ZYahKkFB8g4q6+nsY6rj2ASpQRNrxkUTN2I4GmTRGB3N21uKe1KqbNuaCt5i0KxW0ydcZgAYZFs56qB8ie053VBeMBhhn3LxROKb7g3+NZ6kHkJiOo6p0q7iXiAOh0nvnSGjuSRGllOx/lPe+rdTN+NzuqWSN4sN9WPMjynqSRBMdI0TD7mI2i7uv67s2XpDIORX9dH6IudrLB4Ypz5QX/5Kxyc7Rk16HLSEn42bplj
+fqdn: {{ vm_prefix }}-k8s-{{ vm_instance }}.lan
+hostname: {{ vm_prefix }}-k8s-{{ vm_instance }}
+write_files:
+      - path: /root/.ssh/id_rsa
+        permissions: '0600'
+        owner: root:root
+        content: |
+{{ lookup('file', '/tmp/id_ssh_rsa') | indent(16, True) }}
+      - path: /root/.ssh/id_rsa.pub
+        permissions: '0644'
+        owner: root:root
+        content: |
+{{ lookup('file', '/tmp/id_ssh_rsa.pub') | indent(16, True) }}
+      - path: /root/.ssh/authorized_keys
+        permissions: '0644'
+        owner: root:root
+        content: |
+{{ lookup('file', '/tmp/id_ssh_rsa.pub') | indent(16, True) }}
+      - path: /etc/systemd/system/home-ubuntu-Development.mount
+        permissions: '0664'
+        owner: root:root
+        content: |
+                net.bridge.bridge-nf-call-ip6tables = 1
+                net.bridge.bridge-nf-call-iptables = 1
+      - path: /usr/local/etc/haproxy/haproxy.cfg
+        permissions: '0664'
+        owner: root:root
+        content: |
+                global
+                  log /dev/log local0
+                  log /dev/log local1 notice
+                  daemon
+                resolvers docker
+                  nameserver dns 192.168.128.1:53
+                defaults
+                  log global
+                  mode tcp
+                  option dontlognull
+                  # TODO: tune these
+                  timeout connect 5000
+                  timeout client 50000
+                  timeout server 50000
+                  # allow to boot despite dns don't resolve backends
+                  default-server init-addr none
+                frontend control-plane
+                  bind *:6443
+                  default_backend kube-apiservers
+                backend kube-apiservers
+                  option httpchk GET /healthz
+                  # TODO: we should be verifying (!)
+                {% for i in range(1, number_vms) %}
+                  server {{ vm_prefix }}-k8s-{{ i }} {{ vm_prefix }}-k8s-{{ i }}.lan:6443 check check-ssl verify none resolvers docker resolve-prefer ipv4
+                {% endfor %}
+      - path: /etc/systemd/system/docker.service
+        permissions: '0664'
+        owner: root:root
+        content: |
+                [Unit]
+                Description=Docker Application Container Engine
+                Documentation=https://docs.docker.com
+                BindsTo=containerd.service
+                After=network-online.target firewalld.service containerd.service
+                Wants=network-online.target
+                Requires=docker.socket
+
+                [Service]
+                Type=notify
+                # the default is not to use systemd for cgroups because the delegate issues still
+                # exists and systemd currently does not support the cgroup feature set required
+                # for containers run by docker
+                #ExecStartPre=-/usr/sbin/iptables -N DOCKER-USER
+                #ExecStartPre=/usr/sbin/iptables -I DOCKER-USER -o enp1s0 -j ACCEPT
+                #ExecStartPre=/usr/sbin/iptables -I DOCKER-USER -o enp2s0 -j ACCEPT
+                ExecStart=/usr/bin/dockerd --exec-opt native.cgroupdriver=systemd -H fd:// --containerd=/run/containerd/containerd.sock
+                ExecReload=/bin/kill -s HUP
+                TimeoutSec=0
+                RestartSec=2
+                Restart=always
+
+                # Note that StartLimit* options were moved from "Service" to "Unit" in systemd 229.
+                # Both the old, and new location are accepted by systemd 229 and up, so using the old location
+                # to make them work for either version of systemd.
+                StartLimitBurst=3
+
+                # Note that StartLimitInterval was renamed to StartLimitIntervalSec in systemd 230.
+                # Both the old, and new name are accepted by systemd 230 and up, so using the old name to make
+                # this option work for either version of systemd.
+                StartLimitInterval=60s
+
+                # Having non-zero Limit*s causes performance problems due to accounting overhead
+                # in the kernel. We recommend using cgroups to do container-local accounting.
+                LimitNOFILE=infinity
+                LimitNPROC=infinity
+                LimitCORE=infinity
+
+                # Comment TasksMax if your systemd version does not support it.
+                # Only systemd 226 and above support this option.
+                TasksMax=infinity
+
+                # set delegate yes so that systemd does not reset the cgroups of docker containers
+                Delegate=yes
+
+                # kill only the docker process, not all processes in the cgroup
+                KillMode=process
+
+                [Install]
+                WantedBy=multi-user.target
+      - path: /usr/local/bin/firstbootscript.sh
+        permissions: '0755'
+        owner: root:root
+        content: |
+                #!/bin/bash
+                set -ex
+                export DEBIAN_FRONTEND=noninteractive
+                sudo apt-get update
+                sudo apt-get install -y --no-install-recommends \
+                      docker.io
+                sudo systemctl enable --now docker
+                sudo usermod -aG docker $USER
+                sudo docker run -d \
+                  --name "haproxy" \
+                  --publish "0.0.0.0:6443:6443/tcp" \
+                  --volume "/usr/local/etc/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+                  --restart "always" \
+                  haproxy:2.1.4
+
+runcmd:
+    - [ /bin/su, -s, /bin/bash, -c, /usr/local/bin/firstbootscript.sh, ubuntu ]

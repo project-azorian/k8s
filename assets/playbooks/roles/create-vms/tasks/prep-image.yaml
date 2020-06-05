@@ -1,0 +1,85 @@
+
+- name: "IMG | Creating build directory"
+  local_action:
+    module: tempfile
+    state: directory
+  register: download_dir
+- name: Download ubuntu image
+  local_action:
+    module: get_url
+    url: https://cloud-images.ubuntu.com/bionic/current/bionic-server-cloudimg-amd64.img
+    dest: "{{ download_dir.path }}/{{ vm_prefix }}-base.qcow2"
+- copy:
+    src: "{{ download_dir.path }}/{{ vm_prefix }}-base.qcow2"
+    dest: /var/lib/libvirt/images/{{ vm_prefix }}-base.qcow2
+
+- name: "IMG | Finding availible NBD device to use"
+  shell:
+    executable: /bin/bash
+    cmd: |
+        for dev in /sys/class/block/nbd*; do
+            local size
+            size="$(cat "$dev"/size)"
+            if (( size == 0 ));
+            then
+                printf "%s" "/dev/nbd${dev: -1}"
+                exit 0
+            fi
+        done
+        exit 1
+  register: role_img_nbd_device
+
+- name: "IMG | Creating build directory"
+  tempfile:
+        state: directory
+        suffix: build
+  register: role_img_builddir
+
+- name: "IMG | Connecting QCoW2 to {{ role_img_nbd_device.stdout }}"
+  shell: |
+        qemu-nbd --connect={{ role_img_nbd_device.stdout }} /var/lib/libvirt/images/{{ vm_prefix }}-base.qcow2
+
+- name: "IMG | Connecting QCoW2 to {{ role_img_nbd_device.stdout }}"
+  shell: |
+      mount "{{ role_img_nbd_device.stdout }}p1" "{{ role_img_builddir.path }}"
+      mount -t tmpfs -o size=2048M tmpfs "{{ role_img_builddir.path }}/run"
+      mkdir -p {{ role_img_builddir.path }}/run/systemd/resolve/
+      echo "nameserver 8.8.8.8" > {{ role_img_builddir.path }}/run/systemd/resolve/stub-resolv.conf
+      mount --bind /dev "{{ role_img_builddir.path }}/dev"
+      mount -t proc proc "{{ role_img_builddir.path }}/proc"
+      #chroot "{{ role_img_builddir.path }}" apt-get update
+
+- copy:
+    content: |
+        #!/bin/bash
+        chroot "{{ role_img_builddir.path }}" bash -exc "$@"
+    dest: /tmp/chroot.sh
+    mode: 755
+
+- name: "IMG | Finding availible NBD device to use"
+  shell:
+    executable: /tmp/chroot.sh
+    cmd: |
+        ls /run/systemd/resolve/
+        ls -lah /etc/resolv.conf
+        cat /etc/resolv.conf
+        source <(gpg-agent --daemon)
+        curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+        tee /etc/apt/sources.list.d/kubernetes.list <<EOF
+        deb https://apt.kubernetes.io/ kubernetes-xenial main
+        EOF
+        apt-get update
+        apt-get install -y --no-install-recommends \
+              apt-transport-https \
+              docker.io \
+              kubelet \
+              kubeadm \
+              kubectl \
+              ipvsadm
+        systemctl enable docker
+  register: chrrot_stuff
+- debug:
+    msg: "{{ chrrot_stuff }}"
+- name: "IMG | Detaching QCoW from {{ role_img_nbd_device.stdout }}"
+  shell: |
+        qemu-nbd -d "{{ role_img_nbd_device.stdout }}"

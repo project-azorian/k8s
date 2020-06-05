@@ -1,0 +1,227 @@
+#jinja2: trim_blocks:False
+#cloud-config
+ssh_authorized_keys:
+    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDCAWBkS5iD7ORK59YUjJlPiWnzZXoFPbxlo8kvXjeGVgtUVD/FORZBvztoB9J1xTgE+DEg0dE2DiVrh3WXMWnUUwyaqjIu5Edo++P7xb53T9xRC7TUfc798NLAGk3CD8XvEGbDB7CD6Tvx7HcAco0WpEcPePcTcv89rZGPjal1nY4kGNT/0TWeECm99cXuWFjKm6WiMrir9ZN1yLcX/gjugrHmAGm8kQ/NJVEDRgSPV6jhppp7P/1+yqIUOOOXLx61d8oVG+ADlXEckXoetqHYjbzisxO/wa2KFM7cb5NTVKHFmxwVKX4kJeRL+I/94yLCiG05PidUFsIMzByPBEe/
+    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC9D1m9eMr75japSYMX0Id/af1pyfDM2I1lPSwi2zZwYo8w0b3AyzV3w4iL8PzHCRmxwcm6/w5TfCxEHu7IzTJ4IkN7vIvJEVFPVCJNunuu1ZYahKkFB8g4q6+nsY6rj2ASpQRNrxkUTN2I4GmTRGB3N21uKe1KqbNuaCt5i0KxW0ydcZgAYZFs56qB8ie053VBeMBhhn3LxROKb7g3+NZ6kHkJiOo6p0q7iXiAOh0nvnSGjuSRGllOx/lPe+rdTN+NzuqWSN4sN9WPMjynqSRBMdI0TD7mI2i7uv67s2XpDIORX9dH6IudrLB4Ypz5QX/5Kxyc7Rk16HLSEn42bplj
+fqdn: {{ vm_prefix }}-k8s-{{ vm_instance }}.lan
+hostname: {{ vm_prefix }}-k8s-{{ vm_instance }}
+write_files:
+      - path: /root/.ssh/id_rsa
+        permissions: '0600'
+        owner: root:root
+        content: |
+{{ lookup('file', '/tmp/id_ssh_rsa') | indent(16, True) }}
+      - path: /root/.ssh/id_rsa.pub
+        permissions: '0644'
+        owner: root:root
+        content: |
+{{ lookup('file', '/tmp/id_ssh_rsa.pub') | indent(16, True) }}
+      - path: /root/.ssh/authorized_keys
+        permissions: '0644'
+        owner: root:root
+        content: |
+{{ lookup('file', '/tmp/id_ssh_rsa.pub') | indent(16, True) }}
+      - path: /etc/systemd/system/home-ubuntu-Development.mount
+        permissions: '0664'
+        owner: root:root
+        content: |
+                net.bridge.bridge-nf-call-ip6tables = 1
+                net.bridge.bridge-nf-call-iptables = 1
+      - path: /etc/apt/sources.list.d/kubernetes.list
+        permissions: '0664'
+        owner: root:root
+        content: |
+                deb https://apt.kubernetes.io/ kubernetes-xenial main
+      - path: /var/lib/kubelet/config.yaml
+        permissions: '0664'
+        owner: root:root
+        content: |
+                apiVersion: kubelet.config.k8s.io/v1beta1
+                kind: KubeletConfiguration
+                cgroupDriver: systemd
+      - path: /etc/systemd/system/docker.service
+        permissions: '0664'
+        owner: root:root
+        content: |
+                [Unit]
+                Description=Docker Application Container Engine
+                Documentation=https://docs.docker.com
+                BindsTo=containerd.service
+                After=network-online.target firewalld.service containerd.service
+                Wants=network-online.target
+                Requires=docker.socket
+
+                [Service]
+                Type=notify
+                # the default is not to use systemd for cgroups because the delegate issues still
+                # exists and systemd currently does not support the cgroup feature set required
+                # for containers run by docker
+                #ExecStartPre=-/usr/sbin/iptables -N DOCKER-USER
+                #ExecStartPre=/usr/sbin/iptables -I DOCKER-USER -o enp1s0 -j ACCEPT
+                #ExecStartPre=/usr/sbin/iptables -I DOCKER-USER -o enp2s0 -j ACCEPT
+                ExecStart=/usr/bin/dockerd --exec-opt native.cgroupdriver=systemd -H fd:// --containerd=/run/containerd/containerd.sock
+                ExecReload=/bin/kill -s HUP
+                TimeoutSec=0
+                RestartSec=2
+                Restart=always
+
+                # Note that StartLimit* options were moved from "Service" to "Unit" in systemd 229.
+                # Both the old, and new location are accepted by systemd 229 and up, so using the old location
+                # to make them work for either version of systemd.
+                StartLimitBurst=3
+
+                # Note that StartLimitInterval was renamed to StartLimitIntervalSec in systemd 230.
+                # Both the old, and new name are accepted by systemd 230 and up, so using the old name to make
+                # this option work for either version of systemd.
+                StartLimitInterval=60s
+
+                # Having non-zero Limit*s causes performance problems due to accounting overhead
+                # in the kernel. We recommend using cgroups to do container-local accounting.
+                LimitNOFILE=infinity
+                LimitNPROC=infinity
+                LimitCORE=infinity
+
+                # Comment TasksMax if your systemd version does not support it.
+                # Only systemd 226 and above support this option.
+                TasksMax=infinity
+
+                # set delegate yes so that systemd does not reset the cgroups of docker containers
+                Delegate=yes
+
+                # kill only the docker process, not all processes in the cgroup
+                KillMode=process
+
+                [Install]
+                WantedBy=multi-user.target
+      - path: /opt/kubeadm/config.yaml
+        permissions: '0664'
+        owner: root:root
+        content: |
+          {% if node_instance == '1' %}
+          apiVersion: kubeadm.k8s.io/v1beta2
+          bootstrapTokens:
+          - groups:
+            - system:bootstrappers:kubeadm:default-node-token
+            token: mzgjo4.vgty2txa3desy0b4
+            ttl: 24h0m0s
+            usages:
+            - signing
+            - authentication
+          kind: InitConfiguration
+          localAPIEndpoint:
+            #advertiseAddress: 1.2.3.4
+            bindPort: 6443
+          nodeRegistration:
+            criSocket: /var/run/dockershim.sock
+            name: {{ vm_prefix }}-k8s-1
+            taints:
+            - effect: NoSchedule
+              key: node-role.kubernetes.io/master
+          ---
+          controlPlaneEndpoint: {{ vm_prefix }}-k8s-haproxy.lan:6443
+          apiServer:
+            timeoutForControlPlane: 4m0s
+          apiVersion: kubeadm.k8s.io/v1beta2
+          certificatesDir: /etc/kubernetes/pki
+          clusterName: kubernetes
+          controllerManager: {}
+          dns:
+            type: CoreDNS
+          etcd:
+            local:
+              dataDir: /var/lib/etcd
+          imageRepository: k8s.gcr.io
+          kind: ClusterConfiguration
+          kubernetesVersion: v1.18.3
+          networking:
+            dnsDomain: cluster.local
+            podSubnet: 172.16.1.0/24
+            serviceSubnet: 172.16.2.0/24
+          scheduler: {}
+          ---
+          apiVersion: kubeproxy.config.k8s.io/v1alpha1
+          kind: KubeProxyConfiguration
+          mode: "ipvs"
+          {% else %}
+          apiVersion: kubeadm.k8s.io/v1beta2
+          caCertPath: /etc/kubernetes/pki/ca.crt
+          discovery:
+            bootstrapToken:
+              apiServerEndpoint: {{ vm_prefix }}-k8s-haproxy.lan:6443
+              token: mzgjo4.vgty2txa3desy0b4
+              unsafeSkipCAVerification: true
+            timeout: 5m0s
+            tlsBootstrapToken: mzgjo4.vgty2txa3desy0b4
+          kind: JoinConfiguration
+          nodeRegistration:
+            criSocket: /var/run/dockershim.sock
+            #name: {{ vm_prefix }}-k8s-1
+            taints: null
+          {% if (vm_instance|int) <= number_masters %}
+          controlPlane:
+            localAPIEndpoint:
+              #advertiseAddress: ""
+              bindPort: 6443
+          {% endif %}
+          {% endif %}
+      - path: /usr/local/bin/firstbootscript.sh
+        permissions: '0755'
+        owner: root:root
+        content: |
+                #!/bin/bash
+                set -ex
+                export DEBIAN_FRONTEND=noninteractive
+                curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+                sudo apt-get update
+                sudo apt-get install -y --no-install-recommends \
+                      docker.io \
+                      apt-transport-https \
+                      curl \
+                      kubelet \
+                      kubeadm \
+                      kubectl \
+                      ipvsadm
+                sudo systemctl enable --now docker
+                sudo usermod -aG docker $USER
+                sudo systemctl daemon-reload
+                sudo systemctl restart kubelet
+                #exit 0
+                {% if node_instance == '1' %}
+                sudo kubeadm config images pull --config /opt/kubeadm/config.yaml
+                sudo kubeadm init --config /opt/kubeadm/config.yaml
+                sudo kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://docs.projectcalico.org/v3.14/manifests/calico.yaml
+                mkdir -p $HOME/.kube
+                sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+                sudo chown $(id -u):$(id -g) -R $HOME/.kube
+                for master in {% for i in range(1, ( number_vms - ( number_vms - number_masters ) + 1 ) ) %}{{ vm_prefix }}-k8s-{{ i }} {% endfor %}; do
+                  until sudo ssh -o StrictHostKeyChecking=accept-new ${master} hostname; do
+                    sleep 30
+                  done 
+                done
+                for master in {% for i in range(1, ( number_vms - ( number_vms - number_masters ) + 1 ) ) %}{{ vm_prefix }}-k8s-{{ i }} {% endfor %}; do
+                    sudo ssh ${master} mkdir -p /etc/kubernetes/pki/etcd
+                    sudo scp /etc/kubernetes/pki/ca.crt ${master}:/etc/kubernetes/pki/ca.crt
+                    sudo scp /etc/kubernetes/pki/ca.key ${master}:/etc/kubernetes/pki/ca.key
+                    sudo scp /etc/kubernetes/pki/sa.key ${master}:/etc/kubernetes/pki/sa.key
+                    sudo scp /etc/kubernetes/pki/sa.pub ${master}:/etc/kubernetes/pki/sa.pub
+                    sudo scp /etc/kubernetes/pki/front-proxy-ca.crt ${master}:/etc/kubernetes/pki/front-proxy-ca.crt
+                    sudo scp /etc/kubernetes/pki/front-proxy-ca.key ${master}:/etc/kubernetes/pki/front-proxy-ca.key
+                    sudo scp /etc/kubernetes/pki/etcd/ca.crt ${master}:/etc/kubernetes/pki/etcd/ca.crt
+                    # Quote this line if you are using external etcd
+                    sudo scp /etc/kubernetes/pki/etcd/ca.key ${master}:/etc/kubernetes/pki/etcd/ca.key
+                    sudo ssh ${master} touch /tmp/k8s-certs-ready
+                done
+                {% else %}
+                {% if (vm_instance|int) <= number_masters %}
+                until [ -f /tmp/k8s-certs-ready ]; do
+                    echo "Waiting for certs"
+                    sleep 5
+                done
+                {% endif %}
+                until sudo kubeadm join --config /opt/kubeadm/config.yaml; do
+                  echo "Try again"
+                  sleep 30
+                done
+                {% endif %}
+runcmd:
+    - [ /bin/su, -s, /bin/bash, -c, /usr/local/bin/firstbootscript.sh, ubuntu ]

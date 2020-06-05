@@ -1,0 +1,5 @@
+number_vms: 6
+number_masters: 3
+extra_block: 3
+extra_block_size: 256G
+vm_prefix: harbor

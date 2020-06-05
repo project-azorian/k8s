@@ -1,0 +1,19 @@
+version: 2
+#renderer: networkd
+ethernets:
+    enp1s0:
+        dhcp4: yes
+        dhcp4-overrides:
+            route-metric: 100
+            hostname: {{ vm_prefix }}-k8s-{{ vm_instance }}
+            send-hostname: true
+        dhcp6: false
+        accept-ra: no
+        link-local: [ ]
+    enp2s0:
+        dhcp4: yes
+        dhcp4-overrides:
+            route-metric: 200
+        dhcp6: false
+        accept-ra: no
+        link-local: [ ]

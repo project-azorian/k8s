@@ -1,0 +1,4 @@
+---
+    - hosts: /mnt/rootfs
+      roles:
+        - create-vms

@@ -1,0 +1,63 @@
+- name: "haproxy image"
+  shell: |
+        qemu-img create \
+          -f qcow2 \
+          -F qcow2 \
+          -o "backing_file=/var/lib/libvirt/images/{{ vm_prefix }}-base.qcow2" \
+          "/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}.qcow2"
+        qemu-img resize "/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}.qcow2" +32G
+
+- name: create temporary build directory
+  tempfile:
+    state: directory
+    suffix: build
+  register: cloudinit_tmp
+
+- name: "write out cloud init network and meta data"
+  template:
+      src: "{{ item }}.j2"
+      dest: "{{ cloudinit_tmp.path }}/{{ item }}"
+  vars:
+    node_instance: "{{ vm_instance | int }}"
+  with_items:
+    - network-config
+    - meta-data
+
+- name: "write out cloud init user data"
+  template:
+      src: "user-data-haproxy.j2"
+      dest: "{{ cloudinit_tmp.path }}/user-data"
+
+- name: "creating cloud init iso image"
+  shell: |
+      genisoimage -o "/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}_config.iso" -V cidata -r -J "{{ cloudinit_tmp.path }}/meta-data" "{{ cloudinit_tmp.path }}/network-config" "{{ cloudinit_tmp.path }}/user-data"
+
+- name: "creating haproxy vm definition"
+  shell: |
+        virt-install --connect qemu:///system \
+        --os-variant "ubuntu18.04" \
+        --name "{{ vm_prefix }}-k8s-{{ vm_instance }}" \
+        --memory 4096 \
+        --network bridge=br0 \
+        --network network=default \
+        --cpu host-passthrough \
+        --vcpus 2 \
+        --import \
+        --disk "path=/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}.qcow2" \
+        --disk "path=/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}_config.iso,device=cdrom" \
+        --nographics \
+        --noautoconsole \
+        --autostart \
+        --print-xml
+  register: vm_xml
+
+- name: "defining haproxy vm"
+  virt:
+    command: define
+    xml: "{{ vm_xml.stdout }}"
+
+- name: "starting haproxy vm"
+  virt:
+    name: "{{ vm_prefix }}-k8s-{{ vm_instance }}"
+    state: running
+

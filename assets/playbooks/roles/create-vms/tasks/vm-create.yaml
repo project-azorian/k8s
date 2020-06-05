@@ -1,0 +1,75 @@
+- name: "os image for node {{ vm_instance }}"
+  shell: |
+        qemu-img create \
+          -f qcow2 \
+          -F qcow2 \
+          -o "backing_file=/var/lib/libvirt/images/{{ vm_prefix }}-base.qcow2" \
+          "/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}.qcow2"
+        qemu-img resize "/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}.qcow2" +128G
+
+- name: "creating extra block devices for node {{ vm_instance }}"
+  shell: |
+        addtional_block_size=256G
+        qemu-img create \
+        -f qcow2 \
+        "/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}-{{ item }}.qcow2" "${addtional_block_size}"
+  with_sequence:
+    start=1 end="{{ extra_block | int }}"
+
+
+- name: "create temporary build directory"
+  tempfile:
+    state: directory
+    suffix: build
+  register: cloudinit_tmp
+
+- name: "writing out cloud init for node {{ vm_instance }}"
+  template:
+      src: "{{ item }}.j2"
+      dest: "{{ cloudinit_tmp.path }}/{{ item }}"
+  vars:
+    node_instance: "{{ vm_instance | int }}"
+  with_items:
+    - user-data
+    - network-config
+    - meta-data
+
+- debug:
+    msg: "{{ cloudinit_tmp.path }}/user-data"
+
+- name: "creating cloud init iso image for node {{ vm_instance }}"
+  shell: |
+      genisoimage -o "/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}_config.iso" -V cidata -r -J "{{ cloudinit_tmp.path }}/meta-data" "{{ cloudinit_tmp.path }}/network-config" "{{ cloudinit_tmp.path }}/user-data"
+
+- name: "IMG | Creating storgae for vm {{ vm_instance }}"
+  shell: |
+        virt-install --connect qemu:///system \
+        --os-variant "ubuntu18.04" \
+        --name "{{ vm_prefix }}-k8s-{{ vm_instance }}" \
+        --memory 32832 \
+        --network bridge=br0 \
+        --network network=default \
+        --cpu host-passthrough \
+        --vcpus 4 \
+        --import \
+        --disk "path=/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}.qcow2" \
+        {% for i in range(1, extra_block + 1) %}
+        --disk "/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}-{{ i }}.qcow2,bus=scsi,format=qcow2" \
+        {% endfor %}
+        --disk "path=/var/lib/libvirt/images/{{ vm_prefix }}-k8s-{{ vm_instance }}_config.iso,device=cdrom" \
+        --nographics \
+        --noautoconsole \
+        --autostart \
+        --print-xml
+  register: vm_xml
+
+- name: define vm
+  virt:
+    command: define
+    xml: "{{ vm_xml.stdout }}"
+
+- name: start vm
+  virt:
+    name: "{{ vm_prefix }}-k8s-{{ vm_instance }}"
+    state: running
+
